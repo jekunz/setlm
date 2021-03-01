@@ -12,9 +12,9 @@ from dataset import CorpusLoader
 from helpers import device, load_model, save_model
 
 
-class EntityNLM(nn.Module):
+class SetLM(nn.Module):
     def __init__(self, vocab_size, embedding_size=256, hidden_size=256, num_layers=1, dropout=0.5, train_states=None, tied_embedding=None):
-        super(EntityNLM, self).__init__()
+        super(SetLM, self).__init__()
 
         #assert hidden_size == entity_size, "hidden_size should be equal to entity_size"
         # embedding matrix for input tokens
@@ -378,11 +378,11 @@ corpus = CorpusLoader(partition='train')
 eval_corpus = CorpusLoader(partition='dev')
 
 d = 128
-model = EntityNLM(vocab_size=corpus.vocab_size, 
+model = SetLM(vocab_size=corpus.vocab_size, 
                         embedding_size=d, 
                         hidden_size=d,
                         dropout=0.35).to(device)
-#load_model(model, 'EntityNLM_64_epoch_9.drop.3.001')
+#load_model(model, 'SetLM_64_epoch_9.drop.3.001')
 optimizer = torch.optim.Adam(model.parameters(), lr=0.0005)
 str_pattern='{}_{}_epoch_{}.drop.35.0005'
 run_nlm(model, corpus, optimizer, epochs=25, start_epoch=1, eval_corpus=eval_corpus, status_interval=250, rz_amplifier=1, str_pattern=str_pattern)
