@@ -54,12 +54,14 @@ class SetLM_Model(nn.Module):
         # initialize all necessary states
         self.reset_state()
 
+        
     def reset_state(self):
         # reset hidden state
         # and clear all entities
         self.init_hidden()
         self.init_h_e()
 
+        
     def init_hidden(self):
         # initialize hidden state either with zeros or pre-trained
         if self.train_states:
@@ -68,7 +70,8 @@ class SetLM_Model(nn.Module):
             h0 = torch.zeros(self.num_layers, self.batch_size, self.lstm.hidden_size).to(device) 
             c0 = torch.zeros(self.num_layers, self.batch_size, self.lstm.hidden_size).to(device)
             self.hidden = (h0, c0)
-        
+      
+    
     def init_h_e(self):
         # clear all entities from set of entities
         self.h_e_m = torch.Tensor().to(device)
@@ -103,6 +106,7 @@ class SetLM_Model(nn.Module):
         p_v = nn.functional.softmax(p_v_.view(-1), dim=0) # softmax for weighted sum
         return p_v, p_v_ #softmax normalized, raw values / logits
     
+    
     def hard_soft_attn(self, query, values, hard_amplifier=10):
         """
             hard_soft_attn() creates a weighted sum from values using attention
@@ -122,7 +126,8 @@ class SetLM_Model(nn.Module):
         # creating weighted sum from vectors
         weighted_sum = torch.sum(torch.matmul(soft_keys.diag(), values), dim=0)
         return weighted_sum, keys
-      
+
+    
     def train_forward(self, x, entity_target):
         assert entity_target.item() <= self.h_e_m.size(0), f'entity index out of range: \nh_e_m.size(0): {self.h_e_m.size(0)}, entity_target: {entity_target.item()}'
             
@@ -135,10 +140,8 @@ class SetLM_Model(nn.Module):
         hidden = self.drop_layer(states[0])
         
         # create attention scores over entity states
-        entity_state, entity_raw_dist = self.hard_soft_attn(hidden[0], self.W_score((self.h_e_m.view(-1, self.lstm.hidden_size))))
-        
-
-        
+        entity_state, entity_raw_dist = self.hard_soft_attn(hidden[0], self.W_score((self.h_e_m.view(-1, self.lstm.hidden_size))))       
+       
         # CASE 1: Next token is entity
         # training function uses only target values to change entity states
         if entity_target:
@@ -156,8 +159,7 @@ class SetLM_Model(nn.Module):
                 except Exception as e:
                     print('h_e_m:', self.h_e_m.size())
                     print('entity_target:', entity_target)
-                    raise(e)
-                
+                    raise(e)              
 
         # CASE 2: Next token is no entity
         else:
@@ -165,6 +167,7 @@ class SetLM_Model(nn.Module):
         out = out.contiguous()
         return out, entity_raw_dist
 
+    
     def forward(self, x):
         # create embedded token
         x = self.embedding_matrix(x.view(-1, 1))
@@ -203,11 +206,10 @@ class SetLM_Model(nn.Module):
         return out, z_i, p_v
     
     
-    
-def run_sem(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_interval=25, str_pattern='{}_{}_epoch_{}.pkl'):
+def run_setlm(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_interval=25, str_pattern='{}_{}_epoch_{}.pkl'):
     for epoch in range(1, epochs+1):
         if optimizer:
-            print(f' - Epoch ({epoch}/{epochs})')
+            print(f'Epoch ({epoch}/{epochs})')
         # initialize variables for epoch stats
         X_epoch_loss, E_epoch_loss = 0, 0
         epoch_tokens, epoch_e_div = 0, 0
@@ -216,6 +218,10 @@ def run_sem(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_in
         count_E_correct = 0
         z_true_positive  = 0
         z_false_positive = 0
+        sum_lengths      = 0
+        count_entities   = 0
+        entity_token_loss = 0
+        other_token_loss  = 0
         
         # zero target for new entities
         new_entity_target = torch.ones(1, dtype=torch.long, device=device)
@@ -231,7 +237,7 @@ def run_sem(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_in
                 doc.E[doc.Z == 1.0] += 1
             
             highest_entity = 0
-            
+            current_length   = 0
             
             for t in range(doc_num_tokens):
                 # targets
@@ -245,17 +251,28 @@ def run_sem(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_in
                 e_pred = e_out.argmax()
                 # adding prediction stats for z
                 if e_pred:
+                    current_length += 1
                     if e_target:
                         count_E_correct  += int(e_pred == e_target)
                         z_true_positive  += 1
                     else:
                         z_false_positive += 1
+                else:
+                    if current_length > 0:
+                        sum_lengths    += current_length
+                        count_entities += 1
+                        current_length = 0
                 
                 # token loss
-                X_loss += F.cross_entropy(x_out, x_target)
-                E_loss += F.cross_entropy(e_out.view(1, -1), e_target)
-
-             
+                current_X_loss = F.cross_entropy(x_out, x_target)
+                if e_target:
+                    entity_token_loss += current_X_loss
+                else:
+                    other_token_loss  += current_X_loss
+                    
+                X_loss += current_X_loss
+                E_loss += F.cross_entropy(e_out.view(1, -1), e_target)*2
+                
             
             # add epoch loss and deviding loss values
             X_epoch_loss += X_loss.item()
@@ -263,7 +280,6 @@ def run_sem(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_in
             X_loss /= doc_num_tokens
             E_loss /= doc_num_tokens
             count_E += torch.sum(doc.Z).item()
-            
             
             epoch_tokens += doc_num_tokens
 
@@ -297,7 +313,10 @@ def run_sem(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_in
 
         print(f'Loss: X_loss {X_epoch_loss / epoch_tokens:0.3}, E_loss {E_epoch_loss / epoch_tokens:0.3}, E_acc {count_E_correct/count_E:0.3}, Z_prec {z_prec:0.3}, Z_recall {z_recall:0.3}, Z_Fscore {zf_score:0.3}')
         print()
-        
+        entity_token_loss /= count_E
+        other_token_loss  /= (epoch_tokens-count_E)
+        print(f"All Tokens: Loss {X_epoch_loss / epoch_tokens:0.3}, PP {np.exp(X_epoch_loss / epoch_tokens):0.5}, Entity tokens: Loss {entity_token_loss:0.3}, PP {np.exp(entity_token_loss):0.5}, Non-Entity tokens: Loss {other_token_loss:0.3}, PP {np.exp(other_token_loss):0.5}")
+        print('AVG Lengths:', round(sum_lengths/count_entities ,4))
         # if in train mode
         if optimizer:
             # saving model
@@ -312,16 +331,23 @@ def run_sem(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_in
 
 
 corpus = CorpusLoader(partition='train', lengths=False)
-eval_corpus = CorpusLoader(partition='dev', lengths=False)
-d = 64
+eval_corpus = CorpusLoader(partition='test', lengths=False)
+d = 128
+
 model = SetLM_Model(vocab_size=corpus.vocab_size, 
                         embedding_size=d, 
                         hidden_size=d,
                         dropout=0.2).to(device)
+
 optimizer = torch.optim.Adam(model.parameters(), lr=0.005)
-optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-str_pattern='{}_{}_epoch_{}.setlm'
-run_sem(model, corpus, optimizer, epochs=25, eval_corpus=eval_corpus, status_interval=250, str_pattern=str_pattern)
+str_pattern='{}_{}_epoch_{}.sem'
+load_model(model, 'SetLM_Model_128_epoch_5.sem')
+
+# evaluate model
+with torch.no_grad():
+    model.eval()
+    run_setlm(model, eval_corpus, status_interval=None)
+    model.train()
 
 
 
